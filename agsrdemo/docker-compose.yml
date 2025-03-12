@@ -1,0 +1,81 @@
+version: '3.8'
+services:
+  service-db:
+    container_name: service-db
+    image: mysql
+    environment:
+      MYSQL_DATABASE: agsrdemo
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_PASSWORD: root
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h localhost -u root -proot" ]
+      timeout: 20s
+      retries: 10
+      start_period: 5s
+    ports:
+      - "3307:3306"
+    volumes:
+      - ../infrastructure/db/create_db.sql:/docker-entrypoint-initdb.d/create_db.sql
+    restart: unless-stopped
+    networks:
+      - keycloak-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.1
+    container_name: keycloak
+    environment:
+      KC_DB: mysql
+      KC_DB_URL: jdbc:mysql://service-db:3306/agsrdemo
+      KC_DB_USERNAME: root
+      KC_DB_PASSWORD: root
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_IMPORT: /opt/keycloak/data/import/realm.json
+      KC_HEALTH_ENABLED: true
+    volumes:
+      - ./keycloak/realm.json:/opt/keycloak/data/import/realm.json
+    command:
+      - start-dev
+      - --import-realm
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000;echo -e 'GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n' >&3;if [ $? -eq 0 ]; then echo 'Healthcheck Successful';exit 0;else echo 'Healthcheck Failed';exit 1;fi;" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      service-db:
+        condition: service_healthy
+    ports:
+      - "8082:8080"
+    networks:
+      - keycloak-net
+
+  client-backend:
+    container_name: client-backend
+    image: client-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8181:8181"
+    environment:
+      MYSQL_HOST: service-db
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root
+      MYSQL_PORT: 3306
+      KEYCLOAK_HOST: keycloak
+      KEYCLOAK_PORT: 8080
+    restart: unless-stopped
+    networks:
+      - keycloak-net
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      service-db:
+        condition: service_healthy
+
+networks:
+  keycloak-net:
+    driver: bridge
